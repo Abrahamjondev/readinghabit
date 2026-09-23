@@ -203,7 +203,10 @@ function blobUrl(): string {
 async function blobReadRaw(): Promise<RawFile> {
   const token = process.env.BLOB_READ_WRITE_TOKEN!;
   try {
-    const res = await fetch(blobUrl(), {
+    // Har o'qishda noyob query -> Vercel'ning obyekt keshini chetlab o'tamiz
+    // (aks holda yozgandan keyin eski nusxa qaytishi mumkin).
+    const bust = `?_=${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    const res = await fetch(blobUrl() + bust, {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });

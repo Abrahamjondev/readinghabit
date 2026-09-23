@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafafa;
+  --foreground: #0a0a0a;
+  --muted: #737373;
+  --border: #e5e5e5;
+  --card: #ffffff;
+  --surface: #f5f5f5; /* nozik fon (bo'sh katakcha) */
+  --surface-2: #ededed; /* biroz kuchliroq / hover */
+  --strong: #d4d4d4; /* kuchliroq chegara (hover/focus) */
+  --accent: #262626; /* to'ldirilgan/faol rang */
+  --accent-fg: #ffffff; /* accent ustidagi matn */
+  color-scheme: light;
+}
+
+.dark {
+  --background: #0b0b0d;
+  --foreground: #f4f4f5;
+  --muted: #9ca0a8;
+  --border: #26262b;
+  --card: #161619;
+  --surface: #1d1d21;
+  --surface-2: #26262b;
+  --strong: #3a3a42;
+  --accent: #f4f4f5; /* dark rejimda faol rang -> yorug' */
+  --accent-fg: #0b0b0d;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border-soft: var(--border);
+  --color-card: var(--card);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-strong: var(--strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Gym kuni katakchasi bosilganda "puls" animatsiyasi */
+@keyframes markPop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+.mark-pop {
+  animation: markPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.5s ease both; }
+
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.overlay-in { animation: overlayIn 0.2s ease both; }
+
+@keyframes sheetIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.sheet-in { animation: sheetIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) both; }

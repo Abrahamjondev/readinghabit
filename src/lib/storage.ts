@@ -189,20 +189,25 @@ async function fileWriteRaw(data: RawFile) {
   await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
 }
 
+// Blob URL'ini token ichidagi store id'dan deterministik quramiz.
+// Token format: vercel_blob_rw_<STOREID>_<secret>
+function blobUrl(): string {
+  const token = process.env.BLOB_READ_WRITE_TOKEN!;
+  const storeId = token.split("_")[3] ?? "";
+  return `https://${storeId.toLowerCase()}.private.blob.vercel-storage.com/${BLOB_PATH}`;
+}
+
 // --- Blob backend (Vercel, private store) ---
+// list() eventual-consistent bo'lgani uchun deterministik URL'ni to'g'ridan-to'g'ri
+// (Authorization header bilan) o'qiymiz -> yozgandan keyin darrov ko'rinadi.
 async function blobReadRaw(): Promise<RawFile> {
-  const { list } = await import("@vercel/blob");
   const token = process.env.BLOB_READ_WRITE_TOKEN!;
   try {
-    const { blobs } = await list({ prefix: BLOB_PATH, token, limit: 1 });
-    const found = blobs.find((b) => b.pathname === BLOB_PATH);
-    if (!found) return emptyRaw();
-    // Private blob: url'ni Authorization header bilan o'qiymiz.
-    const res = await fetch(found.url, {
+    const res = await fetch(blobUrl(), {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
-    if (!res.ok) return emptyRaw();
+    if (!res.ok) return emptyRaw(); // 404 = hali hujjat yo'q
     return parseRaw((await res.json()) as Partial<RawFile>);
   } catch {
     return emptyRaw();

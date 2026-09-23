@@ -115,12 +115,18 @@ async function redisGetPushSubs(): Promise<PushSub[]> {
   return h ? Object.values(h) : [];
 }
 
-// ---------- File backend (dev) ----------
+// ---------- Doc backend (bitta JSON hujjat) ----------
+// Prod (Vercel) -> Vercel Blob; lokal -> .data/db.json fayli.
 import { promises as fs } from "fs";
 import path from "path";
 
 const DATA_DIR = path.join(process.cwd(), ".data");
 const DATA_FILE = path.join(DATA_DIR, "db.json");
+
+// Vercel'da BLOB_READ_WRITE_TOKEN mavjud bo'lsa Blob'ni ishlatamiz.
+// Lokalda (VERCEL yo'q) fayl-baza ishlaydi -> prod ma'lumotiga tegmaydi.
+const useBlob = !!process.env.BLOB_READ_WRITE_TOKEN && !!process.env.VERCEL;
+const BLOB_PATH = "db.json";
 
 interface Meta {
   views: number;
@@ -139,34 +145,42 @@ interface RawFile {
   push: Record<string, PushSub>; // endpoint -> subscription
 }
 
+function emptyRaw(): RawFile {
+  return {
+    books: {},
+    logs: {},
+    quotes: {},
+    config: { ...DEFAULT_CONFIG },
+    meta: { views: 0, visitors: 0, daily: {} },
+    reactions: normalizeReactions({}),
+    push: {},
+  };
+}
+
+function parseRaw(parsed: Partial<RawFile>): RawFile {
+  return {
+    books: parsed.books ?? {},
+    logs: parsed.logs ?? {},
+    quotes: parsed.quotes ?? {},
+    config: { ...DEFAULT_CONFIG, ...(parsed.config ?? {}) },
+    meta: {
+      views: parsed.meta?.views ?? 0,
+      visitors: parsed.meta?.visitors ?? 0,
+      daily: parsed.meta?.daily ?? {},
+    },
+    reactions: normalizeReactions(parsed.reactions ?? {}),
+    avatar: parsed.avatar,
+    push: parsed.push ?? {},
+  };
+}
+
+// --- Fayl backend (lokal dev) ---
 async function fileReadRaw(): Promise<RawFile> {
   try {
     const raw = await fs.readFile(DATA_FILE, "utf8");
-    const parsed = JSON.parse(raw) as Partial<RawFile>;
-    return {
-      books: parsed.books ?? {},
-      logs: parsed.logs ?? {},
-      quotes: parsed.quotes ?? {},
-      config: { ...DEFAULT_CONFIG, ...(parsed.config ?? {}) },
-      meta: {
-        views: parsed.meta?.views ?? 0,
-        visitors: parsed.meta?.visitors ?? 0,
-        daily: parsed.meta?.daily ?? {},
-      },
-      reactions: normalizeReactions(parsed.reactions ?? {}),
-      avatar: parsed.avatar,
-      push: parsed.push ?? {},
-    };
+    return parseRaw(JSON.parse(raw) as Partial<RawFile>);
   } catch {
-    return {
-      books: {},
-      logs: {},
-      quotes: {},
-      config: { ...DEFAULT_CONFIG },
-      meta: { views: 0, visitors: 0, daily: {} },
-      reactions: normalizeReactions({}),
-      push: {},
-    };
+    return emptyRaw();
   }
 }
 
@@ -175,8 +189,50 @@ async function fileWriteRaw(data: RawFile) {
   await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
 }
 
-async function fileRead(): Promise<DB> {
-  const raw = await fileReadRaw();
+// --- Blob backend (Vercel, private store) ---
+async function blobReadRaw(): Promise<RawFile> {
+  const { list } = await import("@vercel/blob");
+  const token = process.env.BLOB_READ_WRITE_TOKEN!;
+  try {
+    const { blobs } = await list({ prefix: BLOB_PATH, token, limit: 1 });
+    const found = blobs.find((b) => b.pathname === BLOB_PATH);
+    if (!found) return emptyRaw();
+    // Private blob: url'ni Authorization header bilan o'qiymiz.
+    const res = await fetch(found.url, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return emptyRaw();
+    return parseRaw((await res.json()) as Partial<RawFile>);
+  } catch {
+    return emptyRaw();
+  }
+}
+
+async function blobWriteRaw(data: RawFile) {
+  const { put } = await import("@vercel/blob");
+  const token = process.env.BLOB_READ_WRITE_TOKEN!;
+  await put(BLOB_PATH, JSON.stringify(data), {
+    access: "private",
+    token,
+    allowOverwrite: true,
+    addRandomSuffix: false,
+    contentType: "application/json",
+    cacheControlMaxAge: 0,
+  });
+}
+
+// --- Umumiy doc read/write ---
+async function docReadRaw(): Promise<RawFile> {
+  return useBlob ? blobReadRaw() : fileReadRaw();
+}
+
+async function docWriteRaw(data: RawFile): Promise<void> {
+  return useBlob ? blobWriteRaw(data) : fileWriteRaw(data);
+}
+
+async function docRead(): Promise<DB> {
+  const raw = await docReadRaw();
   return {
     books: raw.books,
     logs: raw.logs,
@@ -187,7 +243,7 @@ async function fileRead(): Promise<DB> {
 
 // ---------- Public API ----------
 export async function getAll(): Promise<DB> {
-  return hasRedis ? redisGetAll() : fileRead();
+  return hasRedis ? redisGetAll() : docRead();
 }
 
 // ----- Kitoblar -----
@@ -197,9 +253,9 @@ export async function setBook(book: Book): Promise<void> {
     await redis.hset(BOOKS_KEY, { [book.id]: book });
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.books[book.id] = book;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 // Kitobni o'chirsak, unga tegishli barcha log va iqtiboslar ham o'chadi.
@@ -223,7 +279,7 @@ export async function removeBook(id: string): Promise<void> {
     ]);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   delete raw.books[id];
   for (const lid of Object.keys(raw.logs)) {
     if (raw.logs[lid].bookId === id) delete raw.logs[lid];
@@ -231,7 +287,7 @@ export async function removeBook(id: string): Promise<void> {
   for (const qid of Object.keys(raw.quotes)) {
     if (raw.quotes[qid].bookId === id) delete raw.quotes[qid];
   }
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 // ----- O'qish yozuvlari (logs) -----
@@ -241,9 +297,9 @@ export async function setLog(log: ReadingLog): Promise<void> {
     await redis.hset(LOGS_KEY, { [log.id]: log });
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.logs[log.id] = log;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 export async function removeLog(id: string): Promise<void> {
@@ -252,9 +308,9 @@ export async function removeLog(id: string): Promise<void> {
     await redis.hdel(LOGS_KEY, id);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   delete raw.logs[id];
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 // ----- Iqtiboslar -----
@@ -264,9 +320,9 @@ export async function setQuote(quote: Quote): Promise<void> {
     await redis.hset(QUOTES_KEY, { [quote.id]: quote });
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.quotes[quote.id] = quote;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 export async function removeQuote(id: string): Promise<void> {
@@ -275,9 +331,9 @@ export async function removeQuote(id: string): Promise<void> {
     await redis.hdel(QUOTES_KEY, id);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   delete raw.quotes[id];
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 // ----- Sozlamalar -----
@@ -287,15 +343,15 @@ export async function setConfig(config: Config): Promise<void> {
     await redis.set(CONFIG_KEY, config);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.config = config;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 // ----- Ko'rishlar -----
 export async function getCounts(todayKey: string): Promise<Counts> {
   if (hasRedis) return redisGetCounts(todayKey);
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   return {
     views: raw.meta.views,
     visitors: raw.meta.visitors,
@@ -308,11 +364,11 @@ export async function registerView(
   todayKey: string,
 ): Promise<Counts> {
   if (hasRedis) return redisRegisterView(newVisitor, todayKey);
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.meta.views += 1;
   raw.meta.daily[todayKey] = (raw.meta.daily[todayKey] ?? 0) + 1;
   if (newVisitor) raw.meta.visitors += 1;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
   return {
     views: raw.meta.views,
     visitors: raw.meta.visitors,
@@ -326,7 +382,7 @@ export async function getAvatar(): Promise<string | null> {
     const redis = await redisClient();
     return (await redis.get<string>(AVATAR_KEY)) ?? null;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   return raw.avatar ?? null;
 }
 
@@ -336,9 +392,9 @@ export async function setAvatar(dataUrl: string): Promise<void> {
     await redis.set(AVATAR_KEY, dataUrl);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.avatar = dataUrl;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 export async function removeAvatar(): Promise<void> {
@@ -347,15 +403,15 @@ export async function removeAvatar(): Promise<void> {
     await redis.del(AVATAR_KEY);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   delete raw.avatar;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 // ----- Reaksiyalar -----
 export async function getReactions(): Promise<ReactionCounts> {
   if (hasRedis) return redisGetReactions();
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   return normalizeReactions(raw.reactions);
 }
 
@@ -364,16 +420,16 @@ export async function changeReaction(
   delta: number,
 ): Promise<ReactionCounts> {
   if (hasRedis) return redisChangeReaction(emoji, delta);
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.reactions[emoji] = Math.max(0, (raw.reactions[emoji] ?? 0) + delta);
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
   return normalizeReactions(raw.reactions);
 }
 
 // ----- Push obunalari -----
 export async function getPushSubs(): Promise<PushSub[]> {
   if (hasRedis) return redisGetPushSubs();
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   return Object.values(raw.push);
 }
 
@@ -383,9 +439,9 @@ export async function addPushSub(sub: PushSub): Promise<void> {
     await redis.hset(PUSH_KEY, { [sub.endpoint]: sub });
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   raw.push[sub.endpoint] = sub;
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 export async function removePushSub(endpoint: string): Promise<void> {
@@ -394,9 +450,9 @@ export async function removePushSub(endpoint: string): Promise<void> {
     await redis.hdel(PUSH_KEY, endpoint);
     return;
   }
-  const raw = await fileReadRaw();
+  const raw = await docReadRaw();
   delete raw.push[endpoint];
-  await fileWriteRaw(raw);
+  await docWriteRaw(raw);
 }
 
 export function usingRedis() {
